@@ -4,12 +4,20 @@ set -u
 # ========================
 # Skrypt instalacyjny — wykrywa konfigurację i pyta użytkownika
 # ========================
-# Uruchom: bash install.sh
+# Uruchom: sudo bash install.sh   (wymaga root/sudo!)
 # Dla każdej wykrytej wartości użytkownik może nacisnąć Enter (zaakceptuj)
 # lub wpisać własną wartość (nadpisze wykrytą).
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENV_FILE="${SCRIPT_DIR}/environments.txt"
+
+# Sprawdź czy skrypt jest uruchomiony jako root
+if [[ $EUID -ne 0 ]]; then
+	echo ""
+	echo "⚠  Ten skrypt wymaga uprawnień root (uruchom: sudo bash install.sh)"
+	echo "   Potrzebne do: ustawiania tras IP, tworzenia plików w /etc/cron.d/, logowania."
+	exit 1
+fi
 
 # Pomocnicza funkcja do wyświetlania nagłówków sekcji
 section(){
@@ -253,6 +261,25 @@ FOOTER
 
 echo ""
 echo "Plik environments.txt został wygenerowany pomyślnie: ${ENV_FILE}"
+
+# --- Dodaj wpis do cron ---
 echo ""
-echo "Możesz teraz uruchomić skrypt główny:"
+echo "--- Konfiguracja crona ---"
+read -rp "  Co ile minut ma uruchamiać się skrypt monitorujący? [1]: " cron_interval
+cron_interval="${cron_interval:-1}"
+
+CRON_FILE="/etc/cron.d/backup_script"
+SCRIPT_ABS_PATH="$(cd "$SCRIPT_DIR" && pwd)/main.sh"
+
+echo "Tworzenie wpisu w ${CRON_FILE} ..."
+cat > "$CRON_FILE" <<EOF
+# Skrypt monitorujący łączność — uruchamiany co ${cron_interval} min
+*/${cron_interval} * * * * root bash ${SCRIPT_ABS_PATH}
+EOF
+
+echo "  ✓ Cron dodany: */${cron_interval} * * * * root bash ${SCRIPT_ABS_PATH}"
+echo "  (plik: ${CRON_FILE})"
+
+echo ""
+echo "Możesz teraz ręcznie uruchomić skrypt (lub poczekać na cron):"
 echo "  bash ${SCRIPT_DIR}/main.sh"
