@@ -4,9 +4,11 @@ set -u
 # ========================
 # Skrypt przeładowujący konfigurację SIP/PJSIP w Asterisku
 # ========================
+# Wywoływany z main.sh po każdej zmianie routingu.
+# Wczytuje konfigurację z config.sh (współdzielony plik konfiguracyjny).
 
-# Plik logów (taka sama ścieżka jak w main.sh)
-LOG_FILE="/var/log/tester.log"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${SCRIPT_DIR}/environments.txt"
 
 # Zapisuje wiadomość do pliku logów z datą i godziną
 log(){ echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"; }
