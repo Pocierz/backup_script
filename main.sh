@@ -21,21 +21,28 @@ ASTERISK_RELOAD_SCRIPT="$(dirname "$0")/asterisk_reload.sh"
 prefer_primary(){
 	ip -4 route replace default via "$GW_PRIMARY" dev "$IFACE_PRIMARY" metric "$METRIC_PRIMARY"
 	ip -4 route replace default via "$GW_BACKUP1"  dev "$IFACE_BACKUP1"  metric "$METRIC_BACKUP1"
-	ip -4 route replace default via "$GW_BACKUP2"  dev "$IFACE_BACKUP2"  metric "$METRIC_BACKUP2"
-	log "Preferencja: PRIMARY ($IFACE_PRIMARY), BACKUP1 ($IFACE_BACKUP1), BACKUP2 ($IFACE_BACKUP2)"
+	if [[ -n "${IFACE_BACKUP2:-}" && -n "${GW_BACKUP2:-}" ]]; then
+		ip -4 route replace default via "$GW_BACKUP2"  dev "$IFACE_BACKUP2"  metric "$METRIC_BACKUP2"
+		log "Preferencja: PRIMARY ($IFACE_PRIMARY), BACKUP1 ($IFACE_BACKUP1), BACKUP2 ($IFACE_BACKUP2)"
+	else
+		log "Preferencja: PRIMARY ($IFACE_PRIMARY), BACKUP1 ($IFACE_BACKUP1)"
+	fi
 }
 
 # Ustawia routing z priorytetem na backup1 (zmiana metryk, bez odłączania primary)
-# Backup1 = najniższa metryka, backup2 = średnia, primary = najwyższa
 prefer_backup1(){
 	ip -4 route replace default via "$GW_BACKUP1"  dev "$IFACE_BACKUP1"  metric "$METRIC_PRIMARY"
-	ip -4 route replace default via "$GW_BACKUP2"  dev "$IFACE_BACKUP2"  metric "$METRIC_BACKUP1"
-	ip -4 route replace default via "$GW_PRIMARY"  dev "$IFACE_PRIMARY" metric "$METRIC_BACKUP2"
-	log "Preferencja: BACKUP1 ($IFACE_BACKUP1) -> BACKUP2 ($IFACE_BACKUP2) -> PRIMARY ($IFACE_PRIMARY)"
+	if [[ -n "${IFACE_BACKUP2:-}" && -n "${GW_BACKUP2:-}" ]]; then
+		ip -4 route replace default via "$GW_BACKUP2"  dev "$IFACE_BACKUP2"  metric "$METRIC_BACKUP1"
+		ip -4 route replace default via "$GW_PRIMARY"  dev "$IFACE_PRIMARY" metric "$METRIC_BACKUP2"
+		log "Preferencja: BACKUP1 ($IFACE_BACKUP1) -> BACKUP2 ($IFACE_BACKUP2) -> PRIMARY ($IFACE_PRIMARY)"
+	else
+		ip -4 route replace default via "$GW_PRIMARY"  dev "$IFACE_PRIMARY" metric "$METRIC_BACKUP1"
+		log "Preferencja: BACKUP1 ($IFACE_BACKUP1) -> PRIMARY ($IFACE_PRIMARY)"
+	fi
 }
 
 # Ustawia routing z priorytetem na backup2 (zmiana metryk, bez odłączania primary)
-# Backup2 = najniższa metryka, backup1 = średnia, primary = najwyższa
 prefer_backup2(){
 	ip -4 route replace default via "$GW_BACKUP2"  dev "$IFACE_BACKUP2"  metric "$METRIC_PRIMARY"
 	ip -4 route replace default via "$GW_BACKUP1"  dev "$IFACE_BACKUP1"  metric "$METRIC_BACKUP1"
@@ -77,7 +84,7 @@ if [[ ! -f "$STATE_FILE" ]]; then
 	cur_dev="$(current_default_dev)"
 	if [[ "$cur_dev" == "$IFACE_BACKUP1" ]]; then
 		echo "backup1" > "$STATE_FILE"
-	elif [[ "$cur_dev" == "$IFACE_BACKUP2" ]]; then
+	elif [[ -n "${IFACE_BACKUP2:-}" && "$cur_dev" == "$IFACE_BACKUP2" ]]; then
 		echo "backup2" > "$STATE_FILE"
 	else
 		echo "up" > "$STATE_FILE"
@@ -87,6 +94,12 @@ fi
 
 # Odczyt ostatniego zapisanego stanu
 state="$(cat "$STATE_FILE" 2>/dev/null || echo up)"
+
+# Czy backup2 jest skonfigurowany?
+has_backup2=false
+if [[ -n "${IFACE_BACKUP2:-}" && -n "${GW_BACKUP2:-}" ]]; then
+	has_backup2=true
+fi
 
 # Utrzymaj spójność routingu z zapisanym stanem (np. po restarcie systemu)
 cur_dev="$(current_default_dev)"
@@ -109,14 +122,25 @@ good_backup1=0
 bad_backup2=0
 good_backup2=0
 
-# Pętla po wszystkich testowanych adresach IP
+# Pętla po wszystkich testowanych adresach IP (obsługuje 1, 2, 3+ hostów)
 for ip in "${IP_LIST[@]}"; do
 	# Wykonaj ping przez każdy interfejs i policz odebrane pakiety
 	received_p="$(recv_count "$ip" "$IFACE_PRIMARY")"
 	received_b1="$(recv_count "$ip" "$IFACE_BACKUP1")"
-	received_b2="$(recv_count "$ip" "$IFACE_BACKUP2")"
 
-	log "Ping $ip -> primary($IFACE_PRIMARY): ${received_p}/${PACKETS_COUNT}, backup1($IFACE_BACKUP1): ${received_b1}/${PACKETS_COUNT}, backup2($IFACE_BACKUP2): ${received_b2}/${PACKETS_COUNT}"
+	if $has_backup2; then
+		received_b2="$(recv_count "$ip" "$IFACE_BACKUP2")"
+		log "Ping $ip -> primary($IFACE_PRIMARY): ${received_p}/${PACKETS_COUNT}, backup1($IFACE_BACKUP1): ${received_b1}/${PACKETS_COUNT}, backup2($IFACE_BACKUP2): ${received_b2}/${PACKETS_COUNT}"
+
+		# Oceniamy wynik dla interfejsu backup2
+		if [[ ${received_b2:-0} -le $THRESHOLD_PING ]]; then
+			((bad_backup2++))
+		else
+			((good_backup2++))
+		fi
+	else
+		log "Ping $ip -> primary($IFACE_PRIMARY): ${received_p}/${PACKETS_COUNT}, backup1($IFACE_BACKUP1): ${received_b1}/${PACKETS_COUNT}"
+	fi
 
 	# Oceniamy wynik dla interfejsu primary
 	if [[ ${received_p:-0} -le $THRESHOLD_PING ]]; then
@@ -130,13 +154,6 @@ for ip in "${IP_LIST[@]}"; do
 		((bad_backup1++))
 	else
 		((good_backup1++))
-	fi
-
-	# Oceniamy wynik dla interfejsu backup2
-	if [[ ${received_b2:-0} -le $THRESHOLD_PING ]]; then
-		((bad_backup2++))
-	else
-		((good_backup2++))
 	fi
 done
 
@@ -166,8 +183,8 @@ elif (( bad_primary == ALL_IP )); then
 			echo "backup1" > "$STATE_FILE"
 			bash "$ASTERISK_RELOAD_SCRIPT"
 		fi
-	# Sprawdź czy backup2 działa poprawnie na wszystkich IP — przełączaj również jeśli jesteśmy na backup1
-	elif (( good_backup2 == ALL_IP )); then
+	# Sprawdź czy backup2 działa poprawnie na wszystkich IP (tylko jeśli jest skonfigurowany)
+	elif $has_backup2 && (( good_backup2 == ALL_IP )); then
 		if [[ "$state" != "backup2" ]]; then
 			log "Primary NIE DZIAŁA, Backup2 OK — przełączam na BACKUP2 ($IFACE_BACKUP2)"
 			python3 "$PYTHON_SCRIPT_PATH" "[CENTRALA] Przełączam na łącze backup2"
@@ -177,14 +194,18 @@ elif (( bad_primary == ALL_IP )); then
 		fi
 	# Żadne łącze nie działa poprawnie — pozostajemy na obecnym
 	else
-		log "Primary, Backup1 i Backup2 NIE DZISŁAJĄ — pozostaję na $(cat "$STATE_FILE")"
+		if $has_backup2; then
+			log "Primary, Backup1 i Backup2 NIE DZIAŁAJĄ — pozostaję na $(cat "$STATE_FILE")"
+		else
+			log "Primary i Backup1 NIE DZIAŁAJĄ — pozostaję na $(cat "$STATE_FILE")"
+		fi
 	fi
 # Primary działa (przynajmniej na jednym IP), ale backupy też są testowane...
 elif (( good_backup1 < ALL_IP )); then
-	# Backup1 nie działa idealnie — sprawdź czy backup2 jest lepszy
-	if (( good_backup2 == ALL_IP )) && [[ "$state" != "backup2" ]]; then
+	# Backup1 nie działa idealnie — sprawdź czy backup2 jest lepszy (tylko jeśli istnieje)
+	if $has_backup2 && (( good_backup2 == ALL_IP )) && [[ "$state" != "backup2" ]]; then
 		log "Backup1 słaby, Backup2 OK — przełączam na BACKUP2 ($IFACE_BACKUP2)"
-			python3 "$PYTHON_SCRIPT_PATH" "[CENTRALA] Przełączam na łącze backup2 (backup1 słaby)"
+		python3 "$PYTHON_SCRIPT_PATH" "[CENTRALA] Przełączam na łącze backup2 (backup1 słaby)"
 		prefer_backup2
 		echo "backup2" > "$STATE_FILE"
 		bash "$ASTERISK_RELOAD_SCRIPT"

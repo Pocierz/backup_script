@@ -43,7 +43,18 @@ echo "Dostępne interfejsy: $(echo $available_ifaces | tr '\n' ' ')"
 
 iface_primary="$(ask "IFACE_PRIMARY" "$(echo "$available_ifaces" | head -1)")"
 iface_backup1="$(ask "IFACE_BACKUP1" "$(echo "$available_ifaces" | sed -n '2p')")"
-iface_backup2="$(ask "IFACE_BACKUP2" "$(echo "$available_ifaces" | sed -n '3p')")"
+
+# Pytaj czy użytkownik chce drugi backup (opcjonalny)
+echo ""
+read -rp "  Czy chcesz skonfigurować drugi interfejs backup (BACKUP2)? [T/n]: " want_backup2
+iface_backup2=""
+gw_backup2=""
+metric_backup2=160
+if [[ "$want_backup2" != "n" && "$want_backup2" != "N" ]]; then
+	iface_backup2="$(ask "IFACE_BACKUP2" "$(echo "$available_ifaces" | sed -n '3p')")"
+else
+	echo "  BACKUP2 pominięty — skrypt będzie działał z jednym backup-em."
+fi
 
 section "Krok 2/4 — Bramy domyślne (gatewaye)"
 echo ""
@@ -73,14 +84,18 @@ echo ""
 # Pytaj o każdą bramkę — domyślnie puste (użytkownik musi wpisać sam)
 gw_primary="$(ask "GW_PRIMARY ($iface_primary):" "")"
 gw_backup1="$(ask "GW_BACKUP1 ($iface_backup1):" "")"
-gw_backup2="$(ask "GW_BACKUP2 ($iface_backup2):" "")"
+if [[ -n "$iface_backup2" ]]; then
+	gw_backup2="$(ask "GW_BACKUP2 ($iface_backup2):" "")"
+fi
 
 section "Krok 3/4 — Pozostała konfiguracja"
 echo ""
 echo "--- Metryki tras (niższa = wyższy priorytet) ---"
 metric_primary="$(ask "METRIC_PRIMARY:" "100")"
 metric_backup1="$(ask "METRIC_BACKUP1:" "150")"
-metric_backup2="$(ask "METRIC_BACKUP2:" "160")"
+if [[ -n "$iface_backup2" ]]; then
+	metric_backup2="$(ask "METRIC_BACKUP2:" "160")"
+fi
 
 echo ""
 echo "--- Testowanie łączności ---"
@@ -110,7 +125,11 @@ section "Podsumowanie — czy wszystko jest OK?"
 echo ""
 echo "  IFACE_PRIMARY   = $iface_primary     GW_PRIMARY   = $gw_primary    METRIC = $metric_primary"
 echo "  IFACE_BACKUP1   = $iface_backup1     GW_BACKUP1    = $gw_backup1    METRIC = $metric_backup1"
-echo "  IFACE_BACKUP2   = $iface_backup2     GW_BACKUP2    = $gw_backup2    METRIC = $metric_backup2"
+if [[ -n "$iface_backup2" ]]; then
+	echo "  IFACE_BACKUP2   = $iface_backup2     GW_BACKUP2    = $gw_backup2    METRIC = $metric_backup2"
+else
+	echo "  (BACKUP2 nie jest skonfigurowany)"
+fi
 echo ""
 echo "  IP_LIST         = $ip_list"
 echo "  PACKETS_COUNT   = $packets_count"
@@ -141,7 +160,8 @@ done
 formatted_ip_list="${formatted_ip_list% }"  # usuń ostatnią spację
 
 # Wygeneruj plik environments.txt
-cat > "$ENV_FILE" <<EOF
+{
+cat <<HEADER
 # ========================
 # Konfiguracja globalna — współdzielona między skryptami
 # ========================
@@ -157,17 +177,43 @@ IP_LIST=(${formatted_ip_list})
 # Interfejsy sieciowe
 IFACE_PRIMARY="${iface_primary}"
 IFACE_BACKUP1="${iface_backup1}"
+HEADER
+
+if [[ -n "$iface_backup2" ]]; then
+cat <<BACKUP2
 IFACE_BACKUP2="${iface_backup2}"
+BACKUP2
+else
+echo "# IFACE_BACKUP2=\"\"  # drugi backup (opcjonalny, zakomentowany)"
+fi
+
+cat <<GW_HEADER
 
 # Bramy domyślne (gatewaye) dla każdego interfejsu
 GW_PRIMARY="${gw_primary}"
 GW_BACKUP1="${gw_backup1}"
-GW_BACKUP2="${gw_backup2}"
+GW_HEADER
+
+if [[ -n "$iface_backup2" ]]; then
+echo "GW_BACKUP2=\"${gw_backup2}\""
+else
+    echo "# GW_BACKUP2=\"\"  # drugi backup (opcjonalny, zakomentowany)"
+fi
+
+cat <<METRIC_HEADER
 
 # Metryki tras — niższa metryka = wyższy priorytet
 METRIC_PRIMARY=${metric_primary}
 METRIC_BACKUP1=${metric_backup1}
-METRIC_BACKUP2=${metric_backup2}
+METRIC_HEADER
+
+if [[ -n "$iface_backup2" ]]; then
+echo "METRIC_BACKUP2=${metric_backup2}"
+else
+    echo "# METRIC_BACKUP2=160  # drugi backup (opcjonalny, zakomentowany)"
+fi
+
+cat <<FOOTER
 
 # --- Testowanie łączności ---
 
@@ -202,7 +248,8 @@ MATRIX_ROOM_ID="${matrix_room_id}"
 
 # Token dostępowy do pokoju Matrix
 MATRIX_ACCESS_TOKEN="${matrix_access_token}"
-EOF
+FOOTER
+} > "$ENV_FILE"
 
 echo ""
 echo "Plik environments.txt został wygenerowany pomyślnie: ${ENV_FILE}"
