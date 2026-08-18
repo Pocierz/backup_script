@@ -1,0 +1,223 @@
+#!/bin/bash
+set -u
+
+# ========================
+# Konfiguracja skryptu
+# ========================
+
+# Lista adresów IP do testowania łączności (ping)
+IP_LIST=("1.1.1.1" "8.8.8.8" "8.8.4.4")
+
+# Interfejsy sieciowe
+iface_primary="eth5"
+iface_backup1="eth1"
+iface_backup2="eth2"
+
+# Bramy domyślne (gatewaye) dla każdego interfejsu
+gw_primary="185.47.64.1"
+gw_backup1="172.27.237.1"
+gw_backup2="172.27.237.2"
+
+# Metryki tras — niższa metryka = wyższy priorytet
+metric_primary=100
+metric_backup1=150
+metric_backup2=160
+
+# Liczba pakietów ping wysyłanych do każdego IP w teście
+PACKETS=100
+
+# Progół akceptowalnej straty pakietów: >70 = OK, ≤70 = problem (strata ≥30%)
+THRESHOLD=70
+
+# Plik przechowujący aktualny stan systemu (up / backup1 / backup2)
+STATE_FILE="/tmp/ip_monitor_state"
+
+# Plik logów
+LOG_FILE="/var/log/tester.log"
+
+# Skrypt Pythona do wysyłania powiadomień
+PYTHON_SCRIPT="/home/powiadomienie.py"
+
+# ========================
+# Funkcje pomocnicze
+# ========================
+
+# Zapisuje wiadomość do pliku logów z datą i godziną
+log(){ echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"; }
+
+# Ścieżka do skryptu przeładowującego Asteriska
+ASTERISK_RELOAD_SCRIPT="$(dirname "$0")/asterisk_reload.sh"
+
+# Ustawia routing z priorytetem na łączu głównym (primary)
+prefer_primary(){
+	ip -4 route replace default via "$gw_primary" dev "$iface_primary" metric "$metric_primary"
+	ip -4 route replace default via "$gw_backup1"  dev "$iface_backup1"  metric "$metric_backup1"
+	ip -4 route replace default via "$gw_backup2"  dev "$iface_backup2"  metric "$metric_backup2"
+	log "Preferencja: PRIMARY ($iface_primary), BACKUP1 ($iface_backup1), BACKUP2 ($iface_backup2)"
+}
+
+# Ustawia routing z priorytetem na backup1 (zmiana metryk, bez odłączania primary)
+# Backup1 = najniższa metryka, backup2 = średnia, primary = najwyższa
+prefer_backup1(){
+	ip -4 route replace default via "$gw_backup1"  dev "$iface_backup1"  metric "$metric_primary"
+	ip -4 route replace default via "$gw_backup2"  dev "$iface_backup2"  metric "$metric_backup1"
+	ip -4 route replace default via "$gw_primary"  dev "$iface_primary" metric "$metric_backup2"
+	log "Preferencja: BACKUP1 ($iface_backup1) -> BACKUP2 ($iface_backup2) -> PRIMARY ($iface_primary)"
+}
+
+# Ustawia routing z priorytetem na backup2 (zmiana metryk, bez odłączania primary)
+# Backup2 = najniższa metryka, backup1 = średnia, primary = najwyższa
+prefer_backup2(){
+	ip -4 route replace default via "$gw_backup2"  dev "$iface_backup2"  metric "$metric_primary"
+	ip -4 route replace default via "$gw_backup1"  dev "$iface_backup1"  metric "$metric_backup1"
+	ip -4 route replace default via "$gw_primary"  dev "$iface_primary" metric "$metric_backup2"
+	log "Preferencja: BACKUP2 ($iface_backup2) -> BACKUP1 ($iface_backup1) -> PRIMARY ($iface_primary)"
+}
+
+# Wykonuje ping do podanego IP przez określony interfejs i zwraca liczbę odebranych pakietów
+recv_count(){
+	local ip="$1"
+	local iface="$2"
+	ping -n -I "$iface" -c "$PACKETS" -i 0.1 "$ip" 2>/dev/null | grep -c 'ttl='
+}
+
+# Zwraca nazwę interfejsu używanego w aktualnej trasie domyślnej
+current_default_dev(){
+	ip -4 route show default 2>/dev/null | awk '/^default/ {print $5; exit}'
+}
+
+# Zwrona adres bramki (gateway) używanej w aktualnej trasie domyślnej
+current_default_gw(){
+	ip -4 route show default 2>/dev/null | awk '
+	/^default/ {
+		for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}
+	}'
+}
+
+# ========================
+# Inicjalizacja
+# ========================
+log "Uruchamiam skrypt"
+
+# ========================
+# Inicjalizacja stanu
+# ========================
+# Jeśli plik stanu nie istnieje, tworzymy go na podstawie aktualnego routingu.
+# Możliwe stany: "up" (primary), "backup1", "backup2"
+if [[ ! -f "$STATE_FILE" ]]; then
+	cur_dev="$(current_default_dev)"
+	if [[ "$cur_dev" == "$iface_backup1" ]]; then
+		echo "backup1" > "$STATE_FILE"
+	elif [[ "$cur_dev" == "$iface_backup2" ]]; then
+		echo "backup2" > "$STATE_FILE"
+	else
+		echo "up" > "$STATE_FILE"
+	fi
+	log "Init: default via $(current_default_gw) dev ${cur_dev:-?}, zapisuję stan=$(cat "$STATE_FILE")"
+fi
+
+# Odczyt ostatniego zapisanego stanu
+state="$(cat "$STATE_FILE" 2>/dev/null || echo up)"
+
+# Utrzymaj spójność routingu z zapisanym stanem (np. po restarcie systemu)
+cur_dev="$(current_default_dev)"
+if [[ "$state" == "backup1" && "$cur_dev" != "$iface_backup1" ]]; then
+	prefer_backup1
+elif [[ "$state" == "backup2" && "$cur_dev" != "$iface_backup2" ]]; then
+	prefer_backup2
+elif [[ "$state" == "up" && "$cur_dev" != "$iface_primary" ]]; then
+	prefer_primary
+fi
+
+# ========================
+# Testowanie łączności na wszystkich interfejsach
+# ========================
+# Inicjalizacja liczników — ile IP „zawaliło" / „przeszło" na każdym interfejsie
+bad_primary=0
+good_primary=0
+bad_backup1=0
+good_backup1=0
+bad_backup2=0
+good_backup2=0
+
+# Pętla po wszystkich testowanych adresach IP
+for ip in "${IP_LIST[@]}"; do
+	# Wykonaj ping przez każdy interfejs i policz odebrane pakiety
+	received_p="$(recv_count "$ip" "$iface_primary")"
+	received_b1="$(recv_count "$ip" "$iface_backup1")"
+	received_b2="$(recv_count "$ip" "$iface_backup2")"
+
+	log "Ping $ip -> primary($iface_primary): ${received_p}/${PACKETS}, backup1($iface_backup1): ${received_b1}/${PACKETS}, backup2($iface_backup2): ${received_b2}/${PACKETS}"
+
+	# Oceniamy wynik dla interfejsu primary
+	if [[ ${received_p:-0} -le $THRESHOLD ]]; then
+		((bad_primary++))
+	else
+		((good_primary++))
+	fi
+
+	# Oceniamy wynik dla interfejsu backup1
+	if [[ ${received_b1:-0} -le $THRESHOLD ]]; then
+		((bad_backup1++))
+	else
+		((good_backup1++))
+	fi
+
+	# Oceniamy wynik dla interfejsu backup2
+	if [[ ${received_b2:-0} -le $THRESHOLD ]]; then
+		((bad_backup2++))
+	else
+		((good_backup2++))
+	fi
+done
+
+# Liczba wszystkich testowanych adresów IP
+ALL_IP="${#IP_LIST[@]}"
+
+# ========================
+# Decyzja o przełączeniu łącza
+# ========================
+if (( good_primary == ALL_IP )); then
+	# Wszystkie IP przeszły przez primary — wracamy na łącze główne (jeśli tam nie jesteśmy)
+	if [[ "$state" != "up" ]]; then
+		log "Primary OK — wracam na PRIMARY ($iface_primary)"
+		python3 "$PYTHON_SCRIPT" "[CENTRALA] Wracam na łącze główne"
+		prefer_primary
+		echo "up" > "$STATE_FILE"
+		bash "$ASTERISK_RELOAD_SCRIPT"
+	fi
+# Jeśli primary zawodzi na WSZYSTKICH IP...
+elif (( bad_primary == ALL_IP )); then
+	# Sprawdź czy backup1 działa poprawnie na wszystkich IP
+	if (( good_backup1 == ALL_IP )); then
+		if [[ "$state" != "backup1" ]]; then
+			log "Primary NIE DZIAŁA, Backup1 OK — przełączam na BACKUP1 ($iface_backup1)"
+			python3 "$PYTHON_SCRIPT" "[CENTRALA] Przełączam na łącze backup1"
+			prefer_backup1
+			echo "backup1" > "$STATE_FILE"
+			bash "$ASTERISK_RELOAD_SCRIPT"
+		fi
+	# Sprawdź czy backup2 działa poprawnie na wszystkich IP — przełączaj również jeśli jesteśmy na backup1
+	elif (( good_backup2 == ALL_IP )); then
+		if [[ "$state" != "backup2" ]]; then
+			log "Primary NIE DZIAŁA, Backup2 OK — przełączam na BACKUP2 ($iface_backup2)"
+			python3 "$PYTHON_SCRIPT" "[CENTRALA] Przełączam na łącze backup2"
+			prefer_backup2
+			echo "backup2" > "$STATE_FILE"
+			bash "$ASTERISK_RELOAD_SCRIPT"
+		fi
+	# Żadne łącze nie działa poprawnie — pozostajemy na obecnym
+	else
+		log "Primary, Backup1 i Backup2 NIE DZISŁAJĄ — pozostaję na $(cat "$STATE_FILE")"
+	fi
+# Primary działa (przynajmniej na jednym IP), ale backupy też są testowane...
+elif (( good_backup1 < ALL_IP )); then
+	# Backup1 nie działa idealnie — sprawdź czy backup2 jest lepszy
+	if (( good_backup2 == ALL_IP )) && [[ "$state" != "backup2" ]]; then
+		log "Backup1 słaby, Backup2 OK — przełączam na BACKUP2 ($iface_backup2)"
+		python3 "$PYTHON_SCRIPT" "[CENTRALA] Przełączam na łącze backup2 (backup1 słaby)"
+		prefer_backup2
+		echo "backup2" > "$STATE_FILE"
+		bash "$ASTERISK_RELOAD_SCRIPT"
+	fi
+fi
