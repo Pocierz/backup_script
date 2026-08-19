@@ -17,6 +17,16 @@ log(){ echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"; }
 # Ścieżka do skryptu przeładowującego Asteriska
 ASTERISK_RELOAD_SCRIPT="$(dirname "$0")/asterisk_reload.sh"
 
+# Ustawia trasę domyślną dla danego interfejsu/gatewaya z podaną metryką.
+# Najpierw usuwa WSZYSTKIE istniejące trasy default via GW dev IFACE,
+# potem dodaje jedną z poprawną metryką.
+# Działa też gdy trasa nie istnieje (del jest cichy, add zawsze zadziała).
+set_default_route(){
+	local gw="$1" iface="$2" metric="$3"
+	ip -4 route del default via "$gw" dev "$iface" 2>/dev/null
+	ip -4 route add default via "$gw" dev "$iface" metric "$metric" 2>/dev/null
+}
+
 # Odczytuje aktualną metrykę primary z systemu (NIE zmienia jej!)
 # Ustawia backupy z offsetem +10 / +20
 prefer_primary(){
@@ -28,9 +38,9 @@ prefer_primary(){
 	local m_backup1=$(( base_metric + 10 ))
 	local m_backup2=$(( base_metric + 20 ))
 
-	ip -4 route replace default via "$GW_BACKUP1"  dev "$IFACE_BACKUP1"  metric "$m_backup1"
+	set_default_route "$GW_BACKUP1" "$IFACE_BACKUP1" "$m_backup1"
 	if [[ -n "${IFACE_BACKUP2:-}" && -n "${GW_BACKUP2:-}" ]]; then
-		ip -4 route replace default via "$GW_BACKUP2"  dev "$IFACE_BACKUP2"  metric "$m_backup2"
+		set_default_route "$GW_BACKUP2" "$IFACE_BACKUP2" "$m_backup2"
 		log "Preferencja: PRIMARY($base_metric) -> BACKUP1($m_backup1) -> BACKUP2($m_backup2)"
 	else
 		log "Preferencja: PRIMARY($base_metric) -> BACKUP1($m_backup1)"
@@ -49,9 +59,9 @@ prefer_backup1(){
 	local m_backup1=$(( base_metric - 10 ))
 	local m_backup2=$(( base_metric + 5 ))
 
-	ip -4 route replace default via "$GW_BACKUP1"  dev "$IFACE_BACKUP1"  metric "$m_backup1"
+	set_default_route "$GW_BACKUP1" "$IFACE_BACKUP1" "$m_backup1"
 	if [[ -n "${IFACE_BACKUP2:-}" && -n "${GW_BACKUP2:-}" ]]; then
-		ip -4 route replace default via "$GW_BACKUP2"  dev "$IFACE_BACKUP2"  metric "$m_backup2"
+		set_default_route "$GW_BACKUP2" "$IFACE_BACKUP2" "$m_backup2"
 		log "Preferencja: BACKUP1($m_backup1) -> PRIMARY($base_metric) -> BACKUP2($m_backup2)"
 	else
 		log "Preferencja: BACKUP1($m_backup1) -> PRIMARY($base_metric)"
@@ -70,8 +80,8 @@ prefer_backup2(){
 	local m_backup1=$(( base_metric + 5 ))
 	local m_backup2=$(( base_metric - 10 ))
 
-	ip -4 route replace default via "$GW_BACKUP2"  dev "$IFACE_BACKUP2"  metric "$m_backup2"
-	ip -4 route replace default via "$GW_BACKUP1"  dev "$IFACE_BACKUP1"  metric "$m_backup1"
+	set_default_route "$GW_BACKUP2" "$IFACE_BACKUP2" "$m_backup2"
+	set_default_route "$GW_BACKUP1" "$IFACE_BACKUP1" "$m_backup1"
 	log "Preferencja: BACKUP2($m_backup2) -> PRIMARY($base_metric) -> BACKUP1($m_backup1)"
 }
 
