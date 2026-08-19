@@ -286,7 +286,7 @@ if $primary_ok; then
 		python3 "$PYTHON_SCRIPT_PATH" "[CENTRALA] Wracam na łącze główne (dostępność: ${avail_primary}%)"
 		prefer_primary
 		echo "up" > "$STATE_FILE"
-		bash "$ASTERISK_RELOAD_SCRIPT"
+		[[ "${RELOAD_ASTERISK:-true}" == "true" ]] && bash "$ASTERISK_RELOAD_SCRIPT"
 	else
 		log "Primary OK (${avail_primary}%), backup1 (${avail_backup1}%)$([ $has_backup2 ] && echo ", backup2 (${avail_backup2}%)") — bez zmian"
 	fi
@@ -297,7 +297,7 @@ elif $backup1_ok; then
 		python3 "$PYTHON_SCRIPT_PATH" "[CENTRALA] Przełączam na łącze backup1 (dostępność: ${avail_backup1}%)"
 		prefer_backup1
 		echo "backup1" > "$STATE_FILE"
-		bash "$ASTERISK_RELOAD_SCRIPT"
+		[[ "${RELOAD_ASTERISK:-true}" == "true" ]] && bash "$ASTERISK_RELOAD_SCRIPT"
 	else
 		log "Backup1 OK (${avail_backup1}%) — bez zmian"
 	fi
@@ -308,7 +308,7 @@ elif $has_backup2 && $backup2_ok; then
 		python3 "$PYTHON_SCRIPT_PATH" "[CENTRALA] Przełączam na łącze backup2 (dostępność: ${avail_backup2}%)"
 		prefer_backup2
 		echo "backup2" > "$STATE_FILE"
-		bash "$ASTERISK_RELOAD_SCRIPT"
+		[[ "${RELOAD_ASTERISK:-true}" == "true" ]] && bash "$ASTERISK_RELOAD_SCRIPT"
 	else
 		log "Backup2 OK (${avail_backup2}%) — bez zmian"
 	fi

@@ -204,6 +204,12 @@ log_file="$(ask "LOG_FILE (plik logów):" "$_default_log_file")"
 # Ścieżka do skryptu Python — ustawiana automatycznie, bez pytania
 python_script_path="${SCRIPT_DIR}/powiadomienie.py"
 
+echo ""
+echo "--- Asterisk ---"
+echo "Po każdej zmianie łącza skrypt może automatycznie przeładować konfigurację SIP."
+echo "Wyłącz tę opcję jeśli nie używasz Asteriska."
+reload_asterisk="$(ask "RELOAD_ASTERISK (przeładowuj SIP po zmianie łącza)? [T/n]:" "${_default_reload_asterisk:-true}")"
+
 section "Krok 4/4 — Matrix (powiadomienia)"
 echo ""
 echo "--- Serwer Matrix ---"
@@ -342,6 +348,9 @@ PYTHON_SCRIPT_PATH="${python_script_path}"
 # Ścieżka do katalogu ze skryptami (ustawiana dynamicznie w main.sh)
 SCRIPT_DIR="\${SCRIPT_DIR:-\$(cd "\$(dirname "\$0")" && pwd)}"
 ASTERISK_RELOAD_SCRIPT="\${SCRIPT_DIR}/asterisk_reload.sh"
+
+# Czy przeładowywać Asteriska po każdej zmianie łącza? (true/false)
+RELOAD_ASTERISK=${reload_asterisk}
 
 # --- Matrix (powiadomienia) ---
 
