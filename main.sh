@@ -8,6 +8,26 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/environments.txt"
 
 # ========================
+# Lock file — zapobiega jednoczesnemu uruchomieniu kilku instancji
+# ========================
+LOCK_FILE="${STATE_FILE}.lock"
+
+# Sprawdź czy inna instancja już działa
+if [[ -f "$LOCK_FILE" ]]; then
+    old_pid=$(cat "$LOCK_FILE" 2>/dev/null)
+    if [[ -n "$old_pid" ]] && kill -0 "$old_pid" 2>/dev/null; then
+        exit 0  # inna instancja żyje — wyjdź
+    fi
+    rm -f "$LOCK_FILE"  # stary plik po zabitym procesie
+fi
+
+echo "$$" > "$LOCK_FILE"
+
+# Usuń lock przy wyjściu (normalnym lub awaryjnym)
+cleanup(){ rm -f "$LOCK_FILE"; }
+trap cleanup EXIT INT TERM
+
+# ========================
 # Funkcje pomocnicze
 # ========================
 

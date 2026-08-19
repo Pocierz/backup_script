@@ -259,23 +259,57 @@ FOOTER
 echo ""
 echo "Plik environments.txt został wygenerowany pomyślnie: ${ENV_FILE}"
 
-# --- Dodaj wpis do cron ---
+# --- Systemd timer (profesjonalny sposób na interwały < 1 min) ---
 echo ""
-echo "--- Konfiguracja crona ---"
-read -rp "  Co ile minut ma uruchamiać się skrypt monitorujący? [1]: " cron_interval
-cron_interval="${cron_interval:-1}"
+echo "--- Konfiguracja uruchamiania (systemd timer) ---"
+echo ""
+echo "Systemd timer to profesjonalny sposób na częste uruchamianie skryptu."
+echo "Obsługuje interwały od sekund, ma status/start/stop przez systemctl,"
+echo "a lock file w skrypcie zapobiegnie zduplikowaniu instancji."
+echo ""
+read -rp "  Co ile sekund ma uruchamiać się skrypt? [10]: " timer_seconds
+timer_seconds="${timer_seconds:-10}"
 
-CRON_FILE="/etc/cron.d/backup_script"
 SCRIPT_ABS_PATH="$(cd "$SCRIPT_DIR" && pwd)/main.sh"
+TIMER_NAME="ip-monitor"
 
-echo "Tworzenie wpisu w ${CRON_FILE} ..."
-cat > "$CRON_FILE" <<EOF
-# Skrypt monitorujący łączność — uruchamiany co ${cron_interval} min
-*/${cron_interval} * * * * root bash ${SCRIPT_ABS_PATH}
+# --- Stwórz service file ---
+cat > /etc/systemd/system/${TIMER_NAME}.service <<EOF
+[Unit]
+Description=Network Failover Monitor — main.sh
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash ${SCRIPT_ABS_PATH}
+TimeoutSec=300
 EOF
 
-echo "  ✓ Cron dodany: */${cron_interval} * * * * root bash ${SCRIPT_ABS_PATH}"
-echo "  (plik: ${CRON_FILE})"
+# --- Stwórz timer file ---
+cat > /etc/systemd/system/${TIMER_NAME}.timer <<EOF
+[Unit]
+Description=Uruchamia ${TIMER_NAME}.service co ${timer_seconds}s
+
+[Timer]
+OnBootSec=5
+OnUnitActiveSec=${timer_seconds}
+AccuracySec=1
+
+[Install]
+WantedBy=timers.target
+EOF
+
+# --- Włącz i uruchom timer ---
+systemctl daemon-reload
+systemctl enable --now ${TIMER_NAME}.timer
+
+echo "  ✓ Systemd timer dodany: ${TIMER_NAME}.timer (co ${timer_seconds}s)"
+echo ""
+echo "Zarządzanie:"
+echo "  systemctl status ${TIMER_NAME}.timer    — status + następne uruchomienie"
+echo "  systemctl stop ${TIMER_NAME}.timer       — zatrzymaj"
+echo "  systemctl start ${TIMER_NAME}.timer      — uruchom ponownie"
+echo "  journalctl -u ${TIMER_NAME}.service       — logi z wykonania"
 
 echo ""
 echo "Możesz teraz ręcznie uruchomić skrypt (lub poczekać na cron):"

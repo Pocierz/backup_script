@@ -1,0 +1,13 @@
+[Unit]
+Description=Uruchamia ip-monitor.service co 10 sekund
+
+[Timer]
+# Co 10 sekund, z 5s opóźnieniem po starcie systemu
+OnBootSec=5
+OnUnitActiveSec=10
+
+# Precyzyzny zegar (ważne przy interwałów < 1 min)
+AccuracySec=1
+
+[Install]
+WantedBy=timers.target

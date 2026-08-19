@@ -1,0 +1,9 @@
+[Unit]
+Description=Network Failover Monitor — main.sh
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /home/kacper/backup_script/main.sh
+# Czas na wykonanie wszystkich pingów (dostosuj jeśli PACKETS_COUNT jest duże)
+TimeoutSec=300
