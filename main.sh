@@ -113,19 +113,46 @@ recv_count(){
 }
 
 # Oblicza średnią % dostępności dla danego interfejsu.
-# Pinguje WSZYSTKIE IP z IP_LIST (sekwencyjnie, ale wyniki są sumowane).
-# Zwraca procent: 0-100 (np. 85 = 85% pakietów dotarło)
+# Pinguje WSZYSTKIE IP z IP_LIST RÓWNOLEGLE (background jobs + wait).
+# Zamiast czekać na każde IP po kolei, wszystkie startują razem —
+# całkowity czas = maksymalny czas jednego pingu, nie suma wszystkich.
+# Wyniki są zapisywane w plikach tymczasowych (unikamy problemów z subshell).
 availability_pct(){
 	local iface="$1"
+	local tmpdir
+	tmpdir=$(mktemp -d)
+
+	# Uruchom wszystkie pingi równolegle w tle
+	for ip in "${IP_LIST[@]}"; do
+		(
+			recv="$(recv_count "$ip" "$iface")"
+			echo "$recv" > "$tmpdir/${ip//\./_}"
+		) &
+	done
+
+	# Czekaj na zakończenie WSZYSTKICH jobów
+	wait
+
+	# Zbierz wyniki z plików tymczasowych
 	local total_sent=0
 	local total_recv=0
-
-	for ip in "${IP_LIST[@]}"; do
-		recv="$(recv_count "$ip" "$iface")"
+	for f in "$tmpdir"/*; do
+		[[ -f "$f" ]] || continue
+		recv="$(cat "$f")"
 		total_recv=$(( total_recv + ${recv:-0} ))
 		total_sent=$(( total_sent + PACKETS_COUNT ))
-		log "  Ping $ip via $iface: ${recv}/${PACKETS_COUNT}"
 	done
+
+	# Podsumowanie w logach (pokaż każdy IP z wynikiem)
+	for ip in "${IP_LIST[@]}"; do
+		local fname="${ip//\./_}"
+		if [[ -f "$tmpdir/$fname" ]]; then
+			log "  Ping $ip via $iface: $(cat "$tmpdir/$fname")/${PACKETS_COUNT}"
+		fi
+	done
+
+	# Usuń pliki tymczasowe
+	rm -rf "$tmpdir"
 
 	# Oblicz % (całkowitoliczbowa arytmetyka, zaokrąglenie w dół)
 	if [[ $total_sent -gt 0 ]]; then
