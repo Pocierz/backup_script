@@ -147,14 +147,14 @@ if [[ -n "${IFACE_BACKUP2:-}" && -n "${GW_BACKUP2:-}" ]]; then
 	has_backup2=true
 fi
 
-# Utrzymaj spójność routingu z zapisanym stanem (np. po restarcie systemu)
-cur_dev="$(current_default_dev)"
-if [[ "$state" == "backup1" && "$cur_dev" != "$IFACE_BACKUP1" ]]; then
+# Przywróć trasy backupów na KAŻDYM uruchomieniu (nawet jeśli stan się nie zmienił).
+# Zapewnia to że trasę backupa da się użyć gdy nagle zniknie.
+if [[ "$state" == "backup1" ]]; then
 	prefer_backup1
-elif [[ "$state" == "backup2" && "$cur_dev" != "$IFACE_BACKUP2" ]]; then
+elif [[ "$state" == "backup2" ]]; then
 	prefer_backup2
-elif [[ "$state" == "up" && "$cur_dev" != "$IFACE_PRIMARY" ]]; then
-	prefer_primary
+else
+	prefer_primary  # stan = „up" lub inny — przywróć backupy z offsetem od primary
 fi
 
 # ========================
