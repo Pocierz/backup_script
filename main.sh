@@ -17,37 +17,62 @@ log(){ echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"; }
 # Ścieżka do skryptu przeładowującego Asteriska
 ASTERISK_RELOAD_SCRIPT="$(dirname "$0")/asterisk_reload.sh"
 
-# Ustawia routing z priorytetem na łączu głównym (primary)
+# Odczytuje aktualną metrykę primary z systemu (NIE zmienia jej!)
+# Ustawia backupy z offsetem +10 / +20
 prefer_primary(){
-	ip -4 route replace default via "$GW_PRIMARY" dev "$IFACE_PRIMARY" metric "$METRIC_PRIMARY"
-	ip -4 route replace default via "$GW_BACKUP1"  dev "$IFACE_BACKUP1"  metric "$METRIC_BACKUP1"
+	local base_metric
+	base_metric="$(route_metric_for_iface "$IFACE_PRIMARY")"
+	if [[ -z "$base_metric" ]]; then
+		base_metric=100  # fallback jak nie ma trasy
+	fi
+	local m_backup1=$(( base_metric + 10 ))
+	local m_backup2=$(( base_metric + 20 ))
+
+	ip -4 route replace default via "$GW_BACKUP1"  dev "$IFACE_BACKUP1"  metric "$m_backup1"
 	if [[ -n "${IFACE_BACKUP2:-}" && -n "${GW_BACKUP2:-}" ]]; then
-		ip -4 route replace default via "$GW_BACKUP2"  dev "$IFACE_BACKUP2"  metric "$METRIC_BACKUP2"
-		log "Preferencja: PRIMARY ($IFACE_PRIMARY), BACKUP1 ($IFACE_BACKUP1), BACKUP2 ($IFACE_BACKUP2)"
+		ip -4 route replace default via "$GW_BACKUP2"  dev "$IFACE_BACKUP2"  metric "$m_backup2"
+		log "Preferencja: PRIMARY($base_metric) -> BACKUP1($m_backup1) -> BACKUP2($m_backup2)"
 	else
-		log "Preferencja: PRIMARY ($IFACE_PRIMARY), BACKUP1 ($IFACE_BACKUP1)"
+		log "Preferencja: PRIMARY($base_metric) -> BACKUP1($m_backup1)"
 	fi
 }
 
-# Ustawia routing z priorytetem na backup1 (zmiana metryk, bez odłączania primary)
+# Ustawia routing z priorytetem na backup1
+# Backup1 = primary - 10 (niższa metryka = wyższy priorytet)
+# Primary NIE jest dotykana
 prefer_backup1(){
-	ip -4 route replace default via "$GW_BACKUP1"  dev "$IFACE_BACKUP1"  metric "$METRIC_PRIMARY"
+	local base_metric
+	base_metric="$(route_metric_for_iface "$IFACE_PRIMARY")"
+	if [[ -z "$base_metric" ]]; then
+		base_metric=100
+	fi
+	local m_backup1=$(( base_metric - 10 ))
+	local m_backup2=$(( base_metric + 5 ))
+
+	ip -4 route replace default via "$GW_BACKUP1"  dev "$IFACE_BACKUP1"  metric "$m_backup1"
 	if [[ -n "${IFACE_BACKUP2:-}" && -n "${GW_BACKUP2:-}" ]]; then
-		ip -4 route replace default via "$GW_BACKUP2"  dev "$IFACE_BACKUP2"  metric "$METRIC_BACKUP1"
-		ip -4 route replace default via "$GW_PRIMARY"  dev "$IFACE_PRIMARY" metric "$METRIC_BACKUP2"
-		log "Preferencja: BACKUP1 ($IFACE_BACKUP1) -> BACKUP2 ($IFACE_BACKUP2) -> PRIMARY ($IFACE_PRIMARY)"
+		ip -4 route replace default via "$GW_BACKUP2"  dev "$IFACE_BACKUP2"  metric "$m_backup2"
+		log "Preferencja: BACKUP1($m_backup1) -> PRIMARY($base_metric) -> BACKUP2($m_backup2)"
 	else
-		ip -4 route replace default via "$GW_PRIMARY"  dev "$IFACE_PRIMARY" metric "$METRIC_BACKUP1"
-		log "Preferencja: BACKUP1 ($IFACE_BACKUP1) -> PRIMARY ($IFACE_PRIMARY)"
+		log "Preferencja: BACKUP1($m_backup1) -> PRIMARY($base_metric)"
 	fi
 }
 
-# Ustawia routing z priorytetem na backup2 (zmiana metryk, bez odłączania primary)
+# Ustawia routing z priorytetem na backup2
+# Backup2 = primary - 10 (niższa metryka = wyższy priorytet)
+# Primary NIE jest dotykana
 prefer_backup2(){
-	ip -4 route replace default via "$GW_BACKUP2"  dev "$IFACE_BACKUP2"  metric "$METRIC_PRIMARY"
-	ip -4 route replace default via "$GW_BACKUP1"  dev "$IFACE_BACKUP1"  metric "$METRIC_BACKUP1"
-	ip -4 route replace default via "$GW_PRIMARY"  dev "$IFACE_PRIMARY" metric "$METRIC_BACKUP2"
-	log "Preferencja: BACKUP2 ($IFACE_BACKUP2) -> BACKUP1 ($IFACE_BACKUP1) -> PRIMARY ($IFACE_PRIMARY)"
+	local base_metric
+	base_metric="$(route_metric_for_iface "$IFACE_PRIMARY")"
+	if [[ -z "$base_metric" ]]; then
+		base_metric=100
+	fi
+	local m_backup1=$(( base_metric + 5 ))
+	local m_backup2=$(( base_metric - 10 ))
+
+	ip -4 route replace default via "$GW_BACKUP2"  dev "$IFACE_BACKUP2"  metric "$m_backup2"
+	ip -4 route replace default via "$GW_BACKUP1"  dev "$IFACE_BACKUP1"  metric "$m_backup1"
+	log "Preferencja: BACKUP2($m_backup2) -> PRIMARY($base_metric) -> BACKUP1($m_backup1)"
 }
 
 # Wykonuje ping do podanego IP przez określony interfejs i zwraca liczbę odebranych pakietów
@@ -62,12 +87,23 @@ current_default_dev(){
 	ip -4 route show default 2>/dev/null | awk '/^default/ {print $5; exit}'
 }
 
-# Zwrona adres bramki (gateway) używanej w aktualnej trasie domyślnej
+# Zwraca adres bramki (gateway) używanej w aktualnej trasie domyślnej
 current_default_gw(){
 	ip -4 route show default 2>/dev/null | awk '
 	/^default/ {
 		for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}
 	}'
+}
+
+# Zwraca aktualną metrykę trasy domyślnej (najniższa z dostępnych)
+current_default_metric(){
+	ip -4 route show default 2>/dev/null | awk '/^default/ {for(i=1;i<=NF;i++) if($i=="metric") print $(i+1); exit}'
+}
+
+# Pobiera metrykę trasy dla danego interfejsu (jeśli istnieje)
+route_metric_for_iface(){
+	local iface="$1"
+	ip -4 route show default dev "$iface" 2>/dev/null | awk '/^default/ {for(i=1;i<=NF;i++) if($i=="metric") print $(i+1); exit}'
 }
 
 # ========================

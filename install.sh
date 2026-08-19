@@ -57,7 +57,6 @@ echo ""
 read -rp "  Czy chcesz skonfigurować drugi interfejs backup (BACKUP2)? [T/n]: " want_backup2
 iface_backup2=""
 gw_backup2=""
-metric_backup2=160
 if [[ "$want_backup2" != "n" && "$want_backup2" != "N" ]]; then
 	iface_backup2="$(ask "IFACE_BACKUP2" "$(echo "$available_ifaces" | sed -n '3p')")"
 else
@@ -98,12 +97,13 @@ fi
 
 section "Krok 3/4 — Pozostała konfiguracja"
 echo ""
-echo "--- Metryki tras (niższa = wyższy priorytet) ---"
-metric_primary="$(ask "METRIC_PRIMARY:" "100")"
-metric_backup1="$(ask "METRIC_BACKUP1:" "150")"
-if [[ -n "$iface_backup2" ]]; then
-	metric_backup2="$(ask "METRIC_BACKUP2:" "160")"
-fi
+echo "--- Metryki tras ---"
+echo "Metryki są obliczane AUTOMATYCZNIE względem aktualnej trasy głównej:"
+echo "  PRIMARY : aktualna metryka z systemu (np. 100)"
+echo "  BACKUP1 : primary + 10 (np. 110)"
+echo "  BACKUP2 : primary + 20 (np. 120)"
+echo "Przy awarii backup dostaje metrykę o 10 mniejszą niż primary."
+metric_primary="$(ask "METRIC_PRIMARY (bazowa, jeśli nie wykryta z systemu):" "100")
 
 echo ""
 echo "--- Testowanie łączności ---"
@@ -131,10 +131,10 @@ ip_list="${ip_list_input:-1.1.1.1 8.8.8.8 8.8.4.4}"
 # --- Podsumowanie konfiguracji ---
 section "Podsumowanie — czy wszystko jest OK?"
 echo ""
-echo "  IFACE_PRIMARY   = $iface_primary     GW_PRIMARY   = $gw_primary    METRIC = $metric_primary"
-echo "  IFACE_BACKUP1   = $iface_backup1     GW_BACKUP1    = $gw_backup1    METRIC = $metric_backup1"
+echo "  IFACE_PRIMARY   = $iface_primary     GW_PRIMARY   = $gw_primary    METRIC = auto (${metric_primary} + offsety)"
+echo "  IFACE_BACKUP1   = $iface_backup1     GW_BACKUP1    = $gw_backup1    METRIC = primary + 10"
 if [[ -n "$iface_backup2" ]]; then
-	echo "  IFACE_BACKUP2   = $iface_backup2     GW_BACKUP2    = $gw_backup2    METRIC = $metric_backup2"
+	echo "  IFACE_BACKUP2   = $iface_backup2     GW_BACKUP2    = $gw_backup2    METRIC = primary + 20"
 else
 	echo "  (BACKUP2 nie jest skonfigurowany)"
 fi
@@ -211,15 +211,12 @@ fi
 cat <<METRIC_HEADER
 
 # Metryki tras — niższa metryka = wyższy priorytet
+# Metryki backupów są obliczane AUTOMATYCZNIE jako primary + offset:
+#   BACKUP1 = METRIC_PRIMARY + 10
+#   BACKUP2 = METRIC_PRIMARY + 20
+# Przy awarii backup dostaje metrykę o 10 mniejszą niż primary.
 METRIC_PRIMARY=${metric_primary}
-METRIC_BACKUP1=${metric_backup1}
 METRIC_HEADER
-
-if [[ -n "$iface_backup2" ]]; then
-echo "METRIC_BACKUP2=${metric_backup2}"
-else
-    echo "# METRIC_BACKUP2=160  # drugi backup (opcjonalny, zakomentowany)"
-fi
 
 cat <<FOOTER
 
