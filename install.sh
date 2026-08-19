@@ -103,7 +103,7 @@ echo "  PRIMARY : aktualna metryka z systemu (np. 100)"
 echo "  BACKUP1 : primary + 10 (np. 110)"
 echo "  BACKUP2 : primary + 20 (np. 120)"
 echo "Przy awarii backup dostaje metrykę o 10 mniejszą niż primary."
-metric_primary="$(ask "METRIC_PRIMARY (bazowa, jeśli nie wykryta z systemu):" "100")
+metric_primary="$(ask "METRIC_PRIMARY (bazowa, jeśli nie wykryta z systemu):" "100")"
 
 echo ""
 echo "--- Testowanie łączności ---"
