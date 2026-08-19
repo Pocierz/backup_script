@@ -41,6 +41,22 @@ ask(){
     fi
 }
 
+# ========================
+# Wczytaj obecną konfigurację jako domyślne wartości (jeśli istnieje)
+# ========================
+existing_env=""
+if [[ -f "$ENV_FILE" ]]; then
+    echo ""
+    echo "✓ Wykryto istniejący plik environments.txt — wczytuję obecne wartości."
+    echo "  Możesz je nadpisać lub nacisnąć Enter, aby zachować."
+    echo ""
+    existing_env="yes"
+    # Wczytaj obecną konfigurację (bezpiecznie, przez source)
+    _src_env() {
+        source "$ENV_FILE"
+    }
+fi
+
 section "Krok 1/4 — Interfejsy sieciowe"
 echo ""
 echo "Wykrywanie interfejsów z systemu..."
@@ -49,18 +65,45 @@ echo "Wykrywanie interfejsów z systemu..."
 available_ifaces=$(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -v lo | sort)
 echo "Dostępne interfejsy: $(echo $available_ifaces | tr '\n' ' ')"
 
-iface_primary="$(ask "IFACE_PRIMARY" "$(echo "$available_ifaces" | head -1)")"
-iface_backup1="$(ask "IFACE_BACKUP1" "$(echo "$available_ifaces" | sed -n '2p')")"
+# Domyślne wartości — z istniejącego pliku LUB wykryte z systemu
+_default_iface_primary=""
+_default_iface_backup1=""
+_default_iface_backup2=""
+if [[ -n "$existing_env" ]]; then
+    _src_env
+    _default_iface_primary="${IFACE_PRIMARY:-$(echo "$available_ifaces" | head -1)}"
+    _default_iface_backup1="${IFACE_BACKUP1:-$(echo "$available_ifaces" | sed -n '2p')}"
+    _default_iface_backup2="${IFACE_BACKUP2:-}"
+else
+    _default_iface_primary="$(echo "$available_ifaces" | head -1)"
+    _default_iface_backup1="$(echo "$available_ifaces" | sed -n '2p')"
+fi
+
+iface_primary="$(ask "IFACE_PRIMARY" "$_default_iface_primary")"
+iface_backup1="$(ask "IFACE_BACKUP1" "$_default_iface_backup1")"
 
 # Pytaj czy użytkownik chce drugi backup (opcjonalny)
 echo ""
-read -rp "  Czy chcesz skonfigurować drugi interfejs backup (BACKUP2)? [T/n]: " want_backup2
-iface_backup2=""
-gw_backup2=""
-if [[ "$want_backup2" != "n" && "$want_backup2" != "N" ]]; then
-	iface_backup2="$(ask "IFACE_BACKUP2" "$(echo "$available_ifaces" | sed -n '3p')")"
+if [[ -n "$existing_env" && -n "${_default_iface_backup2:-}" ]]; then
+    # BACKUP2 już istnieje — zapytaj czy go zachować
+    read -rp "  Czy chcesz zachować BACKUP2 ($_default_iface_backup2)? [T/n]: " want_backup2
+    want_backup2="${want_backup2:-}"
+    if [[ "$want_backup2" == "n" || "$want_backup2" == "N" ]]; then
+        echo "  BACKUP2 zostanie usunięty z konfiguracji."
+        iface_backup2=""
+        gw_backup2=""
+    else
+        iface_backup2="$_default_iface_backup2"
+    fi
 else
-	echo "  BACKUP2 pominięty — skrypt będzie działał z jednym backup-em."
+    read -rp "  Czy chcesz skonfigurować drugi interfejs backup (BACKUP2)? [t/N]: " want_backup2
+    iface_backup2=""
+    gw_backup2=""
+    if [[ "$want_backup2" == "y" || "$want_backup2" == "Y" ]]; then
+        iface_backup2="$(ask "IFACE_BACKUP2" "$(echo "$available_ifaces" | sed -n '3p')")"
+    else
+        echo "  BACKUP2 pominięty — skrypt będzie działał z jednym backup-em."
+    fi
 fi
 
 section "Krok 2/4 — Bramy domyślne (gatewaye)"
@@ -88,11 +131,51 @@ echo "Powyższe gatewaye NIE są automatycznie przypisywane do interfejsów."
 echo "Musisz ręcznie podać poprawne bramki dla swoich interfejsów."
 echo ""
 
-# Pytaj o każdą bramkę — domyślnie puste (użytkownik musi wpisać sam)
-gw_primary="$(ask "GW_PRIMARY ($iface_primary):" "")"
-gw_backup1="$(ask "GW_BACKUP1 ($iface_backup1):" "")"
+# Domyślne gatewaye — z istniejącego pliku LUB puste
+_default_gw_primary=""
+_default_gw_backup1=""
+_default_gw_backup2=""
+if [[ -n "$existing_env" ]]; then
+    _src_env
+    _default_gw_primary="${GW_PRIMARY:-}"
+    _default_gw_backup1="${GW_BACKUP1:-}"
+    _default_gw_backup2="${GW_BACKUP2:-}"
+fi
+
+# Pytaj o każdą bramkę — domyślnie z istniejącej konfiguracji LUB puste
+gw_primary="$(ask "GW_PRIMARY ($iface_primary):" "$_default_gw_primary")"
+gw_backup1="$(ask "GW_BACKUP1 ($iface_backup1):" "$_default_gw_backup1")"
 if [[ -n "$iface_backup2" ]]; then
-	gw_backup2="$(ask "GW_BACKUP2 ($iface_backup2):" "")"
+	gw_backup2="$(ask "GW_BACKUP2 ($iface_backup2):" "${_default_gw_backup2:-}")"
+fi
+
+# Domyślne wartości z istniejącej konfiguracji LUB standardowe
+_default_metric_primary="100"
+_default_ip_list="1.1.1.1 8.8.8.8 8.8.4.4"
+_default_packets_count="100"
+_default_threshold_ping="70"
+_default_state_file="/tmp/ip_monitor_state"
+_default_log_file="/var/log/tester.log"
+_default_matrix_url=""
+_default_matrix_room_id=""
+_default_matrix_token=""
+
+if [[ -n "$existing_env" ]]; then
+    _src_env
+    _default_metric_primary="${METRIC_PRIMARY:-100}"
+    # IP_LIST — odczyt z tablicy bash
+    _default_ip_list=""
+    for _ip in "${IP_LIST[@]}"; do
+        _default_ip_list+="${_ip} "
+    done
+    _default_ip_list="${_default_ip_list% }"
+    _default_packets_count="${PACKETS_COUNT:-100}"
+    _default_threshold_ping="${THRESHOLD_PING:-70}"
+    _default_state_file="${STATE_FILE:-/tmp/ip_monitor_state}"
+    _default_log_file="${LOG_FILE:-/var/log/tester.log}"
+    _default_matrix_url="${MATRIX_URL:-}"
+    _default_matrix_room_id="${MATRIX_ROOM_ID:-}"
+    _default_matrix_token="${MATRIX_ACCESS_TOKEN:-}"
 fi
 
 section "Krok 3/4 — Pozostała konfiguracja"
@@ -103,27 +186,32 @@ echo "  PRIMARY : aktualna metryka z systemu (np. 100)"
 echo "  BACKUP1 : primary + 10 (np. 110)"
 echo "  BACKUP2 : primary + 20 (np. 120)"
 echo "Przy awarii backup dostaje metrykę o 10 mniejszą niż primary."
-metric_primary="$(ask "METRIC_PRIMARY (bazowa, jeśli nie wykryta z systemu):" "100")"
+metric_primary="$(ask "METRIC_PRIMARY (bazowa, jeśli nie wykryta z systemu):" "$_default_metric_primary")"
 
 echo ""
 echo "--- Testowanie łączności ---"
-ip_list_input="$(ask "IP_LIST (adresy IP do pingowania, oddzielone spacą):" "1.1.1.1 8.8.8.8 8.8.4.4")"
-packets_count="$(ask "PACKETS_COUNT (liczba pakietów ping):" "100")"
-threshold_ping="$(ask "THRESHOLD_PING (>wartość = OK, <=wartość = problem):" "70")"
+ip_list_input="$(ask "IP_LIST (adresy IP do pingowania, oddzielone spacą):" "$_default_ip_list")"
+packets_count="$(ask "PACKETS_COUNT (liczba pakietów ping):" "$_default_packets_count")"
+threshold_ping="$(ask "THRESHOLD_PING (>wartość = OK, <=wartość = problem):" "$_default_threshold_ping")"
 
 echo ""
 echo "--- Pliki i ścieżki ---"
-state_file="$(ask "STATE_FILE (plik stanu):" "/tmp/ip_monitor_state")"
-log_file="$(ask "LOG_FILE (plik logów):" "/var/log/tester.log")"
+state_file="$(ask "STATE_FILE (plik stanu):" "$_default_state_file")"
+log_file="$(ask "LOG_FILE (plik logów):" "$_default_log_file")"
 # Ścieżka do skryptu Python — ustawiana automatycznie, bez pytania
 python_script_path="${SCRIPT_DIR}/powiadomienie.py"
 
 section "Krok 4/4 — Matrix (powiadomienia)"
 echo ""
 echo "--- Serwer Matrix ---"
-matrix_url="$(ask "MATRIX_URL (serwer Matrix, np. https://chat.example.com):" "")"
-matrix_room_id="$(ask "MATRIX_ROOM_ID (np. !xyz:server.com):" "")"
-matrix_access_token="$(ask "MATRIX_ACCESS_TOKEN (token dostępowy):" "")"
+matrix_url="$(ask "MATRIX_URL (serwer Matrix, np. https://chat.example.com):" "$_default_matrix_url")"
+matrix_room_id="$(ask "MATRIX_ROOM_ID (np. !xyz:server.com):" "$_default_matrix_room_id")"
+# Pokaż token z istniejącej konfiguracji (obcięty + ...) LUB puste
+_matrix_hint="${_default_matrix_token}"
+if [[ -n "$_matrix_hint" ]]; then
+    _matrix_hint="${_matrix_hint:0:10}..."
+fi
+matrix_access_token="$(ask "MATRIX_ACCESS_TOKEN (token dostępowy):" "$_matrix_hint")"
 
 # Użyj podanej listy IP lub domyślnej
 ip_list="${ip_list_input:-1.1.1.1 8.8.8.8 8.8.4.4}"
@@ -266,12 +354,28 @@ echo ""
 echo "Systemd timer to profesjonalny sposób na częste uruchamianie skryptu."
 echo "Obsługuje interwały od sekund, ma status/start/stop przez systemctl,"
 echo "a lock file w skrypcie zapobiegnie zduplikowaniu instancji."
-echo ""
-read -rp "  Co ile sekund ma uruchamiać się skrypt? [10]: " timer_seconds
-timer_seconds="${timer_seconds:-10}"
-
 SCRIPT_ABS_PATH="$(cd "$SCRIPT_DIR" && pwd)/main.sh"
 TIMER_NAME="ip-monitor"
+
+# Wykryj obecny interwał timera (jeśli istnieje)
+_existing_timer_seconds="10"
+if systemctl get-property "ip-monitor.timer" OnUnitActiveSec >/dev/null 2>&1; then
+    _val=$(systemctl get-property --value "ip-monitor.timer" OnUnitActiveSec 2>/dev/null || echo "")
+    # systemd zwraca np. "10s" lub "500ms" — wyciągnij liczbę sekund
+    if [[ "$_val" =~ ^([0-9]+)s$ ]]; then
+        _existing_timer_seconds="${BASH_REMATCH[1]}"
+    fi
+fi
+
+echo ""
+if systemctl is-active --quiet "ip-monitor.timer" 2>/dev/null; then
+    echo "✓ Wykryto istniejący timer: ${TIMER_NAME}.timer (interwał: ${_existing_timer_seconds}s)"
+else
+    echo "Timer ${TIMER_NAME}.timer nie jest aktywny — konfiguruję od początku."
+fi
+echo ""
+read -rp "  Co ile sekund ma uruchamiać się skrypt? [${_existing_timer_seconds}]: " timer_seconds
+timer_seconds="${timer_seconds:-$_existing_timer_seconds}"
 
 # --- Stwórz service file ---
 cat > /etc/systemd/system/${TIMER_NAME}.service <<EOF
