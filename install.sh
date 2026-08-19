@@ -151,9 +151,9 @@ fi
 
 # Domyślne wartości z istniejącej konfiguracji LUB standardowe
 _default_metric_primary="100"
-_default_ip_list="1.1.1.1 8.8.8.8 8.8.4.4"
+_default_ip_list="1.1.1.1 8.8.8.8 9.9.9.9"
 _default_packets_count="100"
-_default_threshold_ping="70"
+_default_threshold_avail="60"
 _default_state_file="/tmp/ip_monitor_state"
 _default_log_file="/var/log/tester.log"
 _default_matrix_url=""
@@ -170,7 +170,7 @@ if [[ -n "$existing_env" ]]; then
     done
     _default_ip_list="${_default_ip_list% }"
     _default_packets_count="${PACKETS_COUNT:-100}"
-    _default_threshold_ping="${THRESHOLD_PING:-70}"
+    _default_threshold_avail="${THRESHOLD_AVAIL:-60}"
     _default_state_file="${STATE_FILE:-/tmp/ip_monitor_state}"
     _default_log_file="${LOG_FILE:-/var/log/tester.log}"
     _default_matrix_url="${MATRIX_URL:-}"
@@ -190,9 +190,12 @@ metric_primary="$(ask "METRIC_PRIMARY (bazowa, jeśli nie wykryta z systemu):" "
 
 echo ""
 echo "--- Testowanie łączności ---"
+echo "Skrypt pinguje WSZYSTKIE podane IP i oblicza ŚREDNIĄ % dostępności."
+echo "Jeśli średnia < progu → łącze jest uznawane za „martwe\" i przełączany jest backup."
+echo "Liczba adresów: 1-10"
 ip_list_input="$(ask "IP_LIST (adresy IP do pingowania, oddzielone spacą):" "$_default_ip_list")"
-packets_count="$(ask "PACKETS_COUNT (liczba pakietów ping):" "$_default_packets_count")"
-threshold_ping="$(ask "THRESHOLD_PING (>wartość = OK, <=wartość = problem):" "$_default_threshold_ping")"
+packets_count="$(ask "PACKETS_COUNT (liczba pakietów ping do KAŻDEGO IP):" "$_default_packets_count")"
+threshold_avail="$(ask "THRESHOLD_AVAIL (% średniej dostępności, <wartość = awaria):" "$_default_threshold_avail")"
 
 echo ""
 echo "--- Pliki i ścieżki ---"
@@ -214,7 +217,16 @@ fi
 matrix_access_token="$(ask "MATRIX_ACCESS_TOKEN (token dostępowy):" "$_matrix_hint")"
 
 # Użyj podanej listy IP lub domyślnej
-ip_list="${ip_list_input:-1.1.1.1 8.8.8.8 8.8.4.4}"
+ip_list="${ip_list_input:-1.1.1.1 8.8.8.8 9.9.9.9}"
+
+# Walidacja: 1-10 adresów IP
+_ip_count=0
+for _w in $ip_list; do ((_ip_count++)); done
+if [[ $_ip_count -lt 1 || $_ip_count -gt 10 ]]; then
+    echo ""
+    echo "⚠  Liczba adresów IP ($_ip_count) musi być od 1 do 10."
+    exit 1
+fi
 
 # --- Podsumowanie konfiguracji ---
 section "Podsumowanie — czy wszystko jest OK?"
@@ -227,9 +239,9 @@ else
 	echo "  (BACKUP2 nie jest skonfigurowany)"
 fi
 echo ""
-echo "  IP_LIST         = $ip_list"
+echo "  IP_LIST         = $ip_list  ($_ip_count adresów, limit: 1-10)"
 echo "  PACKETS_COUNT   = $packets_count"
-echo "  THRESHOLD_PING  = $threshold_ping"
+echo "  THRESHOLD_AVAIL = ${threshold_avail}% (średnia dostępność <wartość → awaria)"
 echo ""
 echo "  STATE_FILE      = $state_file"
 echo "  LOG_FILE        = $log_file"
@@ -313,8 +325,8 @@ cat <<FOOTER
 # Liczba pakietów ping wysyłanych do każdego IP w teście
 PACKETS_COUNT=${packets_count}
 
-# Progół akceptowalnej straty pakietów: >70 = OK, ≤70 = problem (strata ≥30%)
-THRESHOLD_PING=${threshold_ping}
+# Progół średniej dostępności (wszystkie IP razem): <${threshold_avail}% = awaria, ≥${threshold_avail}% = OK
+THRESHOLD_AVAIL=${threshold_avail}
 
 # --- Pliki i ścieżki ---
 

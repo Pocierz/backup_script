@@ -112,6 +112,29 @@ recv_count(){
 	ping -n -I "$iface" -c "$PACKETS_COUNT" -i 0.1 "$ip" 2>/dev/null | grep -c 'ttl='
 }
 
+# Oblicza średnią % dostępności dla danego interfejsu.
+# Pinguje WSZYSTKIE IP z IP_LIST (sekwencyjnie, ale wyniki są sumowane).
+# Zwraca procent: 0-100 (np. 85 = 85% pakietów dotarło)
+availability_pct(){
+	local iface="$1"
+	local total_sent=0
+	local total_recv=0
+
+	for ip in "${IP_LIST[@]}"; do
+		recv="$(recv_count "$ip" "$iface")"
+		total_recv=$(( total_recv + ${recv:-0} ))
+		total_sent=$(( total_sent + PACKETS_COUNT ))
+		log "  Ping $ip via $iface: ${recv}/${PACKETS_COUNT}"
+	done
+
+	# Oblicz % (całkowitoliczbowa arytmetyka, zaokrąglenie w dół)
+	if [[ $total_sent -gt 0 ]]; then
+		echo $(( total_recv * 100 / total_sent ))
+	else
+		echo 0
+	fi
+}
+
 # Zwraca nazwę interfejsu używanego w aktualnej trasie domyślnej
 current_default_dev(){
 	ip -4 route show default 2>/dev/null | awk '/^default/ {print $5; exit}'
@@ -177,103 +200,96 @@ else
 	prefer_primary  # stan = „up" lub inny — przywróć backupy z offsetem od primary
 fi
 
+# Liczba testowanych adresów IP (walidacja: 1-10)
+ALL_IP="${#IP_LIST[@]}"
+if [[ $ALL_IP -lt 1 || $ALL_IP -gt 10 ]]; then
+    log "BŁĄD: IP_LIST ma ${ALL_IP} adres(ów) — wymagane 1-10."
+    exit 1
+fi
+
 # ========================
 # Testowanie łączności na wszystkich interfejsach
 # ========================
-# Inicjalizacja liczników — ile IP „zawaliło" / „przeszło" na każdym interfejsie
-bad_primary=0
-good_primary=0
-bad_backup1=0
-good_backup1=0
-bad_backup2=0
-good_backup2=0
+# Dla każdego interfejsu obliczamy średnią % dostępności (wszystkie IP razem).
+# Jeśli średnia < THRESHOLD_AVAIL → interfejs jest „martwy".
 
-# Pętla po wszystkich testowanych adresach IP (obsługuje 1, 2, 3+ hostów)
-for ip in "${IP_LIST[@]}"; do
-	# Wykonaj ping przez każdy interfejs i policz odebrane pakiety
-	received_p="$(recv_count "$ip" "$IFACE_PRIMARY")"
-	received_b1="$(recv_count "$ip" "$IFACE_BACKUP1")"
-
-	if $has_backup2; then
-		received_b2="$(recv_count "$ip" "$IFACE_BACKUP2")"
-		log "Ping $ip -> primary($IFACE_PRIMARY): ${received_p}/${PACKETS_COUNT}, backup1($IFACE_BACKUP1): ${received_b1}/${PACKETS_COUNT}, backup2($IFACE_BACKUP2): ${received_b2}/${PACKETS_COUNT}"
-
-		# Oceniamy wynik dla interfejsu backup2
-		if [[ ${received_b2:-0} -le $THRESHOLD_PING ]]; then
-			((bad_backup2++))
-		else
-			((good_backup2++))
-		fi
-	else
-		log "Ping $ip -> primary($IFACE_PRIMARY): ${received_p}/${PACKETS_COUNT}, backup1($IFACE_BACKUP1): ${received_b1}/${PACKETS_COUNT}"
-	fi
-
-	# Oceniamy wynik dla interfejsu primary
-	if [[ ${received_p:-0} -le $THRESHOLD_PING ]]; then
-		((bad_primary++))
-	else
-		((good_primary++))
-	fi
-
-	# Oceniamy wynik dla interfejsu backup1
-	if [[ ${received_b1:-0} -le $THRESHOLD_PING ]]; then
-		((bad_backup1++))
-	else
-		((good_backup1++))
-	fi
-done
-
-# Liczba wszystkich testowanych adresów IP
+# Liczba testowanych adresów IP (walidacja: 1-10)
 ALL_IP="${#IP_LIST[@]}"
+if [[ $ALL_IP -lt 1 || $ALL_IP -gt 10 ]]; then
+    log "BŁĄD: IP_LIST ma ${ALL_IP} adres(ów) — wymagane 1-10."
+    exit 1
+fi
+
+log "Testuję łączność (próg: ${THRESHOLD_AVAIL}%, IP: ${IP_LIST[*]})"
+
+# --- Primary ---
+avail_primary="$(availability_pct "$IFACE_PRIMARY")"
+log "Dostępność PRIMARY($IFACE_PRIMARY): ${avail_primary}%"
+
+# --- Backup1 ---
+avail_backup1="$(availability_pct "$IFACE_BACKUP1")"
+log "Dostępność BACKUP1($IFACE_BACKUP1): ${avail_backup1}%"
+
+# --- Backup2 (opcjonalny) ---
+avail_backup2=0
+if $has_backup2; then
+	avail_backup2="$(availability_pct "$IFACE_BACKUP2")"
+	log "Dostępność BACKUP2($IFACE_BACKUP2): ${avail_backup2}%"
+fi
 
 # ========================
 # Decyzja o przełączeniu łącza
 # ========================
-if (( good_primary == ALL_IP )); then
-	# Wszystkie IP przeszły przez primary — wracamy na łącze główne (jeśli tam nie jesteśmy)
+# Primary jest OK jeśli średnia dostępność >= THRESHOLD_AVAIL
+primary_ok=false
+[[ $avail_primary -ge $THRESHOLD_AVAIL ]] && primary_ok=true
+
+backup1_ok=false
+[[ $avail_backup1 -ge $THRESHOLD_AVAIL ]] && backup1_ok=true
+
+backup2_ok=false
+if $has_backup2; then
+	[[ $avail_backup2 -ge $THRESHOLD_AVAIL ]] && backup2_ok=true
+fi
+
+if $primary_ok; then
+	# Primary OK — wracamy na łącze główne (jeśli tam nie jesteśmy)
 	if [[ "$state" != "up" ]]; then
-		log "Primary OK — wracam na PRIMARY ($IFACE_PRIMARY)"
-		python3 "$PYTHON_SCRIPT_PATH" "[CENTRALA] Wracam na łącze główne"
+		log "Primary OK (${avail_primary}%) — wracam na PRIMARY ($IFACE_PRIMARY)"
+		python3 "$PYTHON_SCRIPT_PATH" "[CENTRALA] Wracam na łącze główne (dostępność: ${avail_primary}%)"
 		prefer_primary
 		echo "up" > "$STATE_FILE"
 		bash "$ASTERISK_RELOAD_SCRIPT"
-	fi
-# Jeśli primary zawodzi na WSZYSTKICH IP...
-elif (( bad_primary == ALL_IP )); then
-	# Sprawdź czy backup1 działa poprawnie na wszystkich IP
-	if (( good_backup1 == ALL_IP )); then
-		if [[ "$state" != "backup1" ]]; then
-			log "Primary NIE DZIAŁA, Backup1 OK — przełączam na BACKUP1 ($IFACE_BACKUP1)"
-			python3 "$PYTHON_SCRIPT_PATH" "[CENTRALA] Przełączam na łącze backup1"
-			prefer_backup1
-			echo "backup1" > "$STATE_FILE"
-			bash "$ASTERISK_RELOAD_SCRIPT"
-		fi
-	# Sprawdź czy backup2 działa poprawnie na wszystkich IP (tylko jeśli jest skonfigurowany)
-	elif $has_backup2 && (( good_backup2 == ALL_IP )); then
-		if [[ "$state" != "backup2" ]]; then
-			log "Primary NIE DZIAŁA, Backup2 OK — przełączam na BACKUP2 ($IFACE_BACKUP2)"
-			python3 "$PYTHON_SCRIPT_PATH" "[CENTRALA] Przełączam na łącze backup2"
-			prefer_backup2
-			echo "backup2" > "$STATE_FILE"
-			bash "$ASTERISK_RELOAD_SCRIPT"
-		fi
-	# Żadne łącze nie działa poprawnie — pozostajemy na obecnym
 	else
-		if $has_backup2; then
-			log "Primary, Backup1 i Backup2 NIE DZIAŁAJĄ — pozostaję na $(cat "$STATE_FILE")"
-		else
-			log "Primary i Backup1 NIE DZIAŁAJĄ — pozostaję na $(cat "$STATE_FILE")"
-		fi
+		log "Primary OK (${avail_primary}%), backup1 (${avail_backup1}%)$([ $has_backup2 ] && echo ", backup2 (${avail_backup2}%)") — bez zmian"
 	fi
-# Primary działa (przynajmniej na jednym IP), ale backupy też są testowane...
-elif (( good_backup1 < ALL_IP )); then
-	# Backup1 nie działa idealnie — sprawdź czy backup2 jest lepszy (tylko jeśli istnieje)
-	if $has_backup2 && (( good_backup2 == ALL_IP )) && [[ "$state" != "backup2" ]]; then
-		log "Backup1 słaby, Backup2 OK — przełączam na BACKUP2 ($IFACE_BACKUP2)"
-		python3 "$PYTHON_SCRIPT_PATH" "[CENTRALA] Przełączam na łącze backup2 (backup1 słaby)"
+elif $backup1_ok; then
+	# Primary nie działa, ale backup1 OK
+	if [[ "$state" != "backup1" ]]; then
+		log "Primary (${avail_primary}%), Backup1 OK (${avail_backup1}%) — przełączam na BACKUP1 ($IFACE_BACKUP1)"
+		python3 "$PYTHON_SCRIPT_PATH" "[CENTRALA] Przełączam na łącze backup1 (dostępność: ${avail_backup1}%)"
+		prefer_backup1
+		echo "backup1" > "$STATE_FILE"
+		bash "$ASTERISK_RELOAD_SCRIPT"
+	else
+		log "Backup1 OK (${avail_backup1}%) — bez zmian"
+	fi
+elif $has_backup2 && $backup2_ok; then
+	# Backup1 nie działa, ale backup2 OK
+	if [[ "$state" != "backup2" ]]; then
+		log "Primary (${avail_primary}%), Backup1 (${avail_backup1}%), Backup2 OK (${avail_backup2}%) — przełączam na BACKUP2 ($IFACE_BACKUP2)"
+		python3 "$PYTHON_SCRIPT_PATH" "[CENTRALA] Przełączam na łącze backup2 (dostępność: ${avail_backup2}%)"
 		prefer_backup2
 		echo "backup2" > "$STATE_FILE"
 		bash "$ASTERISK_RELOAD_SCRIPT"
+	else
+		log "Backup2 OK (${avail_backup2}%) — bez zmian"
+	fi
+else
+	# Żadne łącze nie osiąga progu
+	if $has_backup2; then
+		log "Primary (${avail_primary}%), Backup1 (${avail_backup1}%), Backup2 (${avail_backup2}%) < ${THRESHOLD_AVAIL}% — wszystkie poniżej progu, pozostaję na $(cat "$STATE_FILE")"
+	else
+		log "Primary (${avail_primary}%), Backup1 (${avail_backup1}%) < ${THRESHOLD_AVAIL}% — oba poniżej progu, pozostaję na $(cat "$STATE_FILE")"
 	fi
 fi
