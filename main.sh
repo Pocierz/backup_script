@@ -34,6 +34,22 @@ trap cleanup EXIT INT TERM
 # Zapisuje wiadomość do pliku logów z datą i godziną
 log(){ echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"; }
 
+# Ogranicza rozmiar pliku logów do maksymalnego limitu (w bajtach)
+# Jeśli plik jest większy, zostawia ostatnie 1000 wierszy i tworzy kopię z datą
+rotate_logs(){
+    local max_bytes="$1"
+    [[ ! -f "$LOG_FILE" ]] && return
+    local size
+    size=$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)
+    if [[ $size -gt $max_bytes ]]; then
+        local ts
+        ts=$(date '+%Y%m%d_%H%M%S')
+        head -n 1000 "$LOG_FILE" > "${LOG_FILE}.${ts}.old"
+        tail -n 1000 "$LOG_FILE" > "$LOG_FILE"
+        log "Logi obcięte (${size}B → ${LOG_FILE}.${ts}.old)"
+    fi
+}
+
 # Ścieżka do skryptu przeładowującego Asteriska
 ASTERISK_RELOAD_SCRIPT="$(dirname "$0")/asterisk_reload.sh"
 
@@ -189,6 +205,10 @@ route_metric_for_iface(){
 # ========================
 # Inicjalizacja
 # ========================
+
+# Ograniczenie logów: 1 GB (1073741824 bajtów)
+rotate_logs 1073741824
+
 log "Uruchamiam skrypt"
 
 # ========================
