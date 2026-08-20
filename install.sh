@@ -368,6 +368,21 @@ FOOTER
 echo ""
 echo "Plik environments.txt został wygenerowany pomyślnie: ${ENV_FILE}"
 
+# --- rp_filter=2 (weak-host mode, potrzebne przy wielu łączach z trasami domyślnymi) ---
+echo ""
+echo "--- Konfiguracja sysctl (rp_filter) ---"
+current_rp=$(sysctl -n net.ipv4.conf.all.rp_filter 2>/dev/null || echo "?")
+if [[ "$current_rp" != "2" ]]; then
+    sysctl_dir="/etc/sysctl.d"
+    conf_file="${sysctl_dir}/99-ip-monitor-rpfilter.conf"
+    [[ ! -d "$sysctl_dir" ]] && mkdir -p "$sysctl_dir"
+    echo "net.ipv4.conf.all.rp_filter = 2" > "$conf_file"
+    sysctl -w net.ipv4.conf.all.rp_filter=2 >/dev/null 2>&1
+    echo "  ✓ rp_filter ustawiony na 2 (przedtem: ${current_rp}, plik: $conf_file)"
+else
+    echo "  ✓ rp_filter już ustawiony na 2 — pomijam"
+fi
+
 # --- Systemd timer (profesjonalny sposób na interwały < 1 min) ---
 echo ""
 echo "--- Konfiguracja uruchamiania (systemd timer) ---"

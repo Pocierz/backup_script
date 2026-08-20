@@ -50,37 +50,7 @@ rotate_logs(){
     fi
 }
 
-# Ustawia rp_filter=2 (try weak-host) jeśli nie jest już aktywny
-# Tworzy plik w /etc/sysctl.d/ dla trwałości po reboocie
-setup_rp_filter(){
-    local sysctl_dir="/etc/sysctl.d"
-    local conf_file="${sysctl_dir}/99-ip-monitor-rpfilter.conf"
-
-    # Sprawdź czy rp_filter jest już ustawiony na 2
-    local current
-    current=$(sysctl -n net.ipv4.conf.all.rp_filter 2>/dev/null)
-    if [[ "$current" == "2" ]]; then
-        return 0  # już ustawione — nic nie rób
-    fi
-
-    # Katalog /etc/sysctl.d/ istnieje?
-    if [[ ! -d "$sysctl_dir" ]]; then
-        mkdir -p "$sysctl_dir" || { log "BŁĄD: nie można utworzyć $sysctl_dir"; return 1; }
-    fi
-
-    # Stwórz plik konfiguracyjny (nadpisuje jeśli istnieje z inną wartością)
-    echo "net.ipv4.conf.all.rp_filter = 2" > "$conf_file" || { log "BŁĄD: nie można zapisać $conf_file"; return 1; }
-
-    # Załaduj natychmiast bez rebootu
-    sysctl -w net.ipv4.conf.all.rp_filter=2 >/dev/null 2>&1
-    if [[ $? -eq 0 ]]; then
-        log "Ustawiono rp_filter=2 (przedtem: ${current:-?}, plik: $conf_file)"
-    else
-        log "BŁĄD: sysctl nie zaakceptował rp_filter=2"
-        return 1
-    fi
-}
-
+# Ustawia rp_filter=2 (try weak-host) — konfigurowane raz przez install.sh
 # Ścieżka do skryptu przeładowującego Asteriska
 ASTERISK_RELOAD_SCRIPT="$(dirname "$0")/asterisk_reload.sh"
 
@@ -239,9 +209,6 @@ route_metric_for_iface(){
 
 # Ograniczenie logów: 1 GB (1073741824 bajtów)
 rotate_logs 1073741824
-
-# Ustaw rp_filter=2 jeśli nie jest jeszcze aktywny
-setup_rp_filter
 
 log "Uruchamiam skrypt"
 
