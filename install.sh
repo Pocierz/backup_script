@@ -437,5 +437,3 @@ echo "  systemctl start ${TIMER_NAME}.timer      — uruchom ponownie"
 echo "  journalctl -u ${TIMER_NAME}.service       — logi z wykonania"
 
 echo ""
-echo "Możesz teraz ręcznie uruchomić skrypt (lub poczekać na cron):"
-echo "  bash ${SCRIPT_DIR}/main.sh"
