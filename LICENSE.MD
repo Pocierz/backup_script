@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 [Twoje Imię i Nazwisko lub Nick]
+Copyright (c) 2026 Kacper Pocierznicki
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
