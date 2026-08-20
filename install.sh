@@ -99,7 +99,7 @@ else
     read -rp "  Czy chcesz skonfigurować drugi interfejs backup (BACKUP2)? [t/N]: " want_backup2
     iface_backup2=""
     gw_backup2=""
-    if [[ "$want_backup2" == "y" || "$want_backup2" == "Y" ]]; then
+    if [[ "$want_backup2" =~ ^[tTyY]$ ]]; then
         iface_backup2="$(ask "IFACE_BACKUP2" "$(echo "$available_ifaces" | sed -n '3p')")"
     else
         echo "  BACKUP2 pominięty — skrypt będzie działał z jednym backup-em."
